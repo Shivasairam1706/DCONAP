@@ -1,2 +1,1 @@
-# DCONAP
-Data Center Outage Notification and Prediction Utilizing Satellite Weather
+# DCONAP - Data Center Outage Notification and Prediction Utilizing Satellite Weather
