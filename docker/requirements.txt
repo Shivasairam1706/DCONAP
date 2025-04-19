@@ -1,0 +1,32 @@
+# Basic
+numpy
+pandas
+matplotlib
+scikit-learn
+seaborn
+plotly
+pytest
+
+# Storage
+delta-spark==3.1.0 #  integration between Spark and Delta Lake
+
+# pre-processing
+pyspark
+findspark # Helpful utility for working with PySpark in notebooks
+jq # for processing json data
+
+#Deep learning
+tensorflow  # or tensorflow-gpu if you have a compatible GPU
+torch  # or torchvision if needed
+
+#AWS
+boto3
+sagemaker  # Only if using SageMaker-specific features
+
+#Visualization
+seaborn  # Highly recommended, but not strictly "essential"
+statsmodels
+
+#Interactive
+notebook
+jupyterlab
