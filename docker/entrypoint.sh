@@ -1,27 +1,37 @@
 #!/bin/bash
+set -e
 
-# Get AWS credentials from Secrets Manager (or use IAM role if on ECS)
-if [ -n "$AWS_SECRET_NAME" ]; then  # Check if secret name is set
-    aws --version # Check if aws cli is installed in docker
-    aws secretsmanager get-secret-value --secret-id "$AWS_SECRET_NAME" --query 'SecretString' --output text | jq -r . | jq -r '.AWS_ACCESS_KEY_ID' > /tmp/aws_access_key_id
-    aws secretsmanager get-secret-value --secret-id "$AWS_SECRET_NAME" --query 'SecretString' --output text | jq -r . | jq -r '.AWS_SECRET_ACCESS_KEY' > /tmp/aws_secret_access_key
-    export AWS_ACCESS_KEY_ID=$(cat /tmp/aws_access_key_id)
-    export AWS_SECRET_ACCESS_KEY=$(cat /tmp/aws_secret_access_key)
-    rm /tmp/aws_access_key_id
-    rm /tmp/aws_secret_access_key
+# Fetch AWS credentials from Secrets Manager if secret name is set
+if [ -n "$AWS_SECRET_NAME" ]; then
+  echo "Fetching AWS credentials..."
+  if ! command -v aws &>/dev/null; then
+    echo "AWS CLI not found. Exiting."
+    exit 1
+  fi
+
+  if ! command -v jq &>/dev/null; then
+    echo "jq not found. Exiting."
+    exit 1
+  fi
+
+  CREDS=$(aws secretsmanager get-secret-value --secret-id "$AWS_SECRET_NAME" --query 'SecretString' --output text)
+  export AWS_ACCESS_KEY_ID=$(echo "$CREDS" | jq -r '.AWS_ACCESS_KEY_ID')
+  export AWS_SECRET_ACCESS_KEY=$(echo "$CREDS" | jq -r '.AWS_SECRET_ACCESS_KEY')
 fi
 
-# Change ownership of the mounted volume's target directory if it exists
+# Change ownership of the mounted volume
 if [ -d "$JUPYTER_MOUNT_PATH" ]; then
-  chown -R $UID:$GID "$JUPYTER_MOUNT_PATH"
+  echo "Changing ownership of $JUPYTER_MOUNT_PATH to UID:$UID GID:$GID"
+  chown -R "$UID":"$GID" "$JUPYTER_MOUNT_PATH"
 fi
 
-# Check if the password environment variable is set
+# Jupyter Password setup
 if [ -z "$JUPYTER_PASSWORD" ]; then
-  echo "JUPYTER_PASSWORD environment variable not set. Using token-based authentication."
-  exec "$@"  # Execute the original CMD (JupyterLab with no password)
+  echo "No password set. Jupyter will use token authentication."
+  exec su jupyteruser -c "$*"
 else
-  # Generate the password hash and start JupyterLab
-  jupyter server password "$JUPYTER_PASSWORD"
-  exec "$@"  # Execute the original CMD (JupyterLab with password)
+  HASH=$(python3 -c "from notebook.auth import passwd; print(passwd('$JUPYTER_PASSWORD'))")
+  mkdir -p /home/jupyteruser/.jupyter
+  echo "c.NotebookApp.password = u'$HASH'" > /home/jupyteruser/.jupyter/jupyter_notebook_config.py
+  exec su jupyteruser -c "$*"
 fi
