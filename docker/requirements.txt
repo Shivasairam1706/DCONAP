@@ -15,3 +15,5 @@ statsmodels
 
 #Interactive
 jupyterlab
+notebook
+ipywidgets

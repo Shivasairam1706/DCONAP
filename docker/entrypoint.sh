@@ -25,13 +25,22 @@ if [ -d "$JUPYTER_MOUNT_PATH" ]; then
   chown -R "$UID":"$GID" "$JUPYTER_MOUNT_PATH"
 fi
 
-# Jupyter Password setup
+# JupyterLab password setup
 if [ -z "$JUPYTER_PASSWORD" ]; then
-  echo "No password set. Jupyter will use token authentication."
-  exec su jupyteruser -c "$*"
+  echo "JUPYTER_PASSWORD environment variable not set. Using token-based authentication."
 else
-  HASH=$(python3 -c "from notebook.auth import passwd; print(passwd('$JUPYTER_PASSWORD'))")
+  echo "JUPYTER_PASSWORD is set. Enabling password authentication for JupyterLab."
+
+  # Check if jupyter_server.auth is available
+  if ! python3 -c "import jupyter_server.auth" &>/dev/null; then
+    echo "Error: jupyter_server.auth module not found. Please install jupyterlab properly."
+    exit 1
+  fi
+
+  HASH=$(python3 -c "from jupyter_server.auth import passwd; print(passwd('$JUPYTER_PASSWORD'))")
   mkdir -p /home/jupyteruser/.jupyter
-  echo "c.NotebookApp.password = u'$HASH'" > /home/jupyteruser/.jupyter/jupyter_notebook_config.py
-  exec su jupyteruser -c "$*"
+  echo "c.ServerApp.password = u'$HASH'" > /home/jupyteruser/.jupyter/jupyter_server_config.py
 fi
+
+# Start JupyterLab as the jupyteruser
+exec su jupyteruser -c "$@"
