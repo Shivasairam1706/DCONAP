@@ -1,6 +1,41 @@
+version: "3.9"
+
+########################################
+# Networks & Volumes
+########################################
+networks:
+  dconap_network:
+    name: ${DOCKER_NETWORK:-dconap-network}
+    driver: bridge
+
+volumes:
+  postgres_data:
+    name: ${POSTGRES_VOLUME:-postgres_data}
+  redis_data:
+    name: ${REDIS_VOLUME:-redis_data}
+  grafana_data:
+    name: ${GRAFANA_VOLUME:-grafana_data}
+  spark_warehouse:
+    name: ${SPARK_WAREHOUSE_VOLUME:-spark_warehouse}
+  spark_logs:
+    name: ${SPARK_LOGS_VOLUME:-spark_logs}
+  gitlab_config:
+    name: ${GITLAB_CONFIG_VOLUME:-gitlab_config}
+  gitlab_logs:
+    name: ${GITLAB_LOGS_VOLUME:-gitlab_logs}
+  gitlab_data:
+    name: ${GITLAB_DATA_VOLUME:-gitlab_data}
+  prometheus_data:
+    name: ${PROMETHEUS_VOLUME:-prometheus_data}
+  superset_data:
+    name: ${SUPERSET_VOLUME:-superset_data}
+
+########################################
+# Services
+########################################
 services:
   postgres:
-    image: postgres
+    image: postgres:latest
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -9,100 +44,119 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     networks:
-      - datacenter_network
+      - dconap_network
     profiles:
-      - dev
       - base
-      - realtime
-      - batch
-      - web
+      - dev
+      - full
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   redis:
     image: redis:6.2
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
     networks:
-      - datacenter_network
+      - dconap_network
     profiles:
       - base
-      - realtime
-      - batch
-      - web
+      - dev
+      - full
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
 
   gitlab:
-    image: "gitlab/gitlab-ce:latest"
+    image: gitlab/gitlab-ce:latest
     restart: always
-    hostname: "gitlab.example.com"
+    hostname: "${GITLAB_HOSTNAME:-gitlab.example.com}"
     ports:
-      - "80:80"
-      - "443:443"
-      - "22:22"
+      - "${GITLAB_PORT_HTTP:-80}:80"
+      - "${GITLAB_PORT_HTTPS:-443}:443"
+      - "${GITLAB_PORT_SSH:-22}:22"
     volumes:
-      - "${GITLAB_HOME}/config:/etc/gitlab"
-      - "${GITLAB_HOME}/logs:/var/log/gitlab"
-      - "${GITLAB_HOME}/data:/var/opt/gitlab"
+      - gitlab_config:/etc/gitlab
+      - gitlab_logs:/var/log/gitlab
+      - gitlab_data:/var/opt/gitlab
     environment:
       GITLAB_OMNIBUS_CONFIG: |
-        external_url 'http://gitlab.example.com'
-        gitlab_rails['gitlab_shell_ssh_port'] = 22
+        external_url 'http://${GITLAB_HOSTNAME:-gitlab.example.com}'
+        gitlab_rails['gitlab_shell_ssh_port'] = ${GITLAB_PORT_SSH:-22}
     networks:
-      - datacenter_network
+      - dconap_network
     profiles:
       - base
+      - full
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   spark-master:
     image: bitnami/spark:3.5.0
     hostname: spark-master
     environment:
-      - SPARK_MODE=master
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-      - SPARK_RPC_ENCRYPTION_ENABLED=no
-      - SPARK_SSL_ENABLED=no
+      SPARK_MODE: master
+      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
+      SPARK_RPC_ENCRYPTION_ENABLED: "no"
+      SPARK_SSL_ENABLED: "no"
     ports:
-      - "8088:8080"
-      - "7077:7077"
+      - "${SPARK_MASTER_UI_PORT:-8088}:8080"
+      - "${SPARK_MASTER_PORT:-7077}:7077"
     volumes:
-      - ./spark-warehouse:/opt/bitnami/spark/warehouse
-      - ./spark-logs:/opt/bitnami/spark/logs
+      - spark_warehouse:/opt/bitnami/spark/warehouse
+      - spark_logs:/opt/bitnami/spark/logs
     networks:
-      - datacenter_network
+      - dconap_network
     profiles:
       - spark
+      - full
     healthcheck:
-      test: ["CMD", "curl", "-f", "spark://localhost:7077"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
       interval: 10s
-      retries: 5
-      start_period: 10s
       timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
 
-  spark-worker-1:
+  spark-worker:
     image: bitnami/spark:3.5.0
-    hostname: spark-worker-1
     depends_on:
       - spark-master
     environment:
-      - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark://spark-master:7077
-      - SPARK_WORKER_MEMORY=1G
-      - SPARK_WORKER_CORES=2
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-      - SPARK_RPC_ENCRYPTION_ENABLED=no
-      - SPARK_SSL_ENABLED=no
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-1G}
+      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-2}
+      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
+      SPARK_RPC_ENCRYPTION_ENABLED: "no"
+      SPARK_SSL_ENABLED: "no"
     volumes:
-      - ./spark-warehouse:/opt/bitnami/spark/warehouse
-      - ./spark-logs:/opt/bitnami/spark/logs
+      - spark_warehouse:/opt/bitnami/spark/warehouse
+      - spark_logs:/opt/bitnami/spark/logs
     networks:
-      - datacenter_network
+      - dconap_network
     profiles:
       - spark
-    healthcheck:
-      test: ["CMD", "curl", "-f", "spark://localhost:7077"]
-      interval: 10s
-      retries: 5
-      start_period: 10s
-      timeout: 5s
+      - full
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
 
   airflow:
     image: apache/airflow:2.6.3
@@ -111,14 +165,15 @@ services:
       - postgres
       - redis
     environment:
-      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
-      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
-      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
-      AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+      AIRFLOW__CORE__EXECUTOR: ${AIRFLOW__CORE__EXECUTOR}
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: ${AIRFLOW__CORE__SQL_ALCHEMY_CONN}
+      AIRFLOW__CELERY__BROKER_URL: ${AIRFLOW__CELERY__BROKER_URL}
+      AIRFLOW__CELERY__RESULT_BACKEND: ${AIRFLOW__CELERY__RESULT_BACKEND}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
     volumes:
       - ./docker/dags:/opt/airflow/dags
     ports:
-      - "8080:8080"
+      - "${AIRFLOW_PORT:-8081}:8080"
     command: webserver
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
@@ -126,108 +181,126 @@ services:
       timeout: 10s
       retries: 3
     networks:
-      - datacenter_network
+      - dconap_network
     profiles:
-      - full
       - batch
+      - full
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   grafana:
     image: grafana/grafana:latest
+    depends_on:
+      - prometheus
     ports:
-      - "3000:3000"
+      - "${GRAFANA_PORT:-3000}:3000"
     volumes:
       - grafana_data:/var/lib/grafana
       - ./docker/grafana_provisioning:/etc/grafana/provisioning
     environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
     networks:
-      - datacenter_network
+      - dconap_network
     profiles:
-      - full
       - monitoring
-    depends_on:
-      - prometheus
+      - full
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   kafka:
     image: confluentinc/cp-kafka:7.3.0
-    hostname: kafka
-    ports:
-      - "9092:9092"
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_LOG_RETENTION_MS: -1
-      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
-      KAFKA_NUM_PARTITIONS: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
     depends_on:
       - zookeeper
+    environment:
+      KAFKA_BROKER_ID: ${KAFKA_BROKER_ID}
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
     networks:
-      - datacenter_network
+      - dconap_network
     profiles:
-      - full
       - realtime
+      - full
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.3.0
-    hostname: zookeeper
-    ports:
-      - "2181:2181"
     environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_CLIENT_PORT: ${ZOOKEEPER_PORT}
       ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "${ZOOKEEPER_PORT:-2181}:2181"
     networks:
-      - datacenter_network
+      - dconap_network
     profiles:
-      - full
       - realtime
+      - full
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
 
   flink-jobmanager:
     image: apache/flink:1.17.1-scala_2.12
-    hostname: flink-jobmanager
-    ports:
-      - "6123:6123"
-      - "8081:8081"
+    depends_on:
+      - kafka
     command: jobmanager
     environment:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
-    depends_on:
-      - kafka
+    ports:
+      - "${FLINK_JOBMANAGER_UI_PORT:-8082}:8081"
+      - "${FLINK_JOBMANAGER_PORT:-6123}:6123"
     networks:
-      - datacenter_network
+      - dconap_network
     profiles:
-      - full
       - realtime
+      - full
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
 
   flink-taskmanager:
     image: apache/flink:1.17.1-scala_2.12
-    hostname: flink-taskmanager
+    depends_on:
+      - flink-jobmanager
     command: taskmanager
-    scale: 2
     environment:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
-        taskmanager.numberOfTaskSlots: 2
-    depends_on:
-      - flink-jobmanager
+        taskmanager.numberOfTaskSlots: ${FLINK_TASK_SLOTS:-2}
+    scale: ${FLINK_TASKMANAGER_SCALE:-2}
     networks:
-      - datacenter_network
+      - dconap_network
     profiles:
-      - full
       - realtime
+      - full
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
 
   superset:
     image: apache/superset:2.1.0
-    ports:
-      - "8089:8088"
     depends_on:
       - postgres
     environment:
@@ -236,50 +309,68 @@ services:
       SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD}
       SUPERSET_ADMIN_FIRSTNAME: ${SUPERSET_ADMIN_FIRSTNAME}
       SUPERSET_ADMIN_LASTNAME: ${SUPERSET_ADMIN_LASTNAME}
+    ports:
+      - "${SUPERSET_PORT:-8085}:8088"
+    volumes:
+      - superset_data:/app/superset_home
     networks:
-      - datacenter_network
+      - dconap_network
     profiles:
-      - full
       - web
+      - full
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   prometheus:
     image: prom/prometheus:v2.45.0
     ports:
-      - "9090:9090"
+      - "${PROMETHEUS_PORT:-9090}:9090"
     volumes:
-      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
     networks:
-      - datacenter_network
+      - dconap_network
     profiles:
-      - full
       - monitoring
+      - full
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
 
-  dev:
+  development:
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        UID: ${USER_ID}
-        GID: ${GROUP_ID}
-        HADOOP_VERSION: ${HADOOP_VERSION}
-        HADOOP_URL: ${HADOOP_URL}
+        USER_ID: ${USER_ID}
+        GROUP_ID: ${GROUP_ID}
+        JUPYTER_PORT: ${JUPYTER_PORT}
+        JUPYTER_WORKSPACE_DIR: ${JUPYTER_WORKSPACE_DIR}
     environment:
       JUPYTER_PASSWORD: ${JUPYTER_PASSWORD}
-      JUPYTER_MOUNT_PATH: /home/jupyteruser/work
+      JUPYTER_TOKEN: ${JUPYTER_TOKEN}
+      AWS_SECRET_NAME: ${AWS_SECRET_NAME:-}
+      JUPYTER_MOUNT_PATH: ${JUPYTER_WORKSPACE_DIR}
     volumes:
-      - ./baseline:/home/jupyteruser/work
+      - ./baseline:${JUPYTER_WORKSPACE_DIR}
     ports:
-      - "8888:8888"
+      - "${JUPYTER_PORT:-8888}:${JUPYTER_PORT:-8888}"
     networks:
-      - datacenter_network
+      - dconap_network
     profiles:
       - dev
       - spark
-
-volumes:
-  postgres_data:
-  grafana_data:
-
-networks:
-  datacenter_network:
-    driver: bridge
+      - full
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+########################################
+# End of docker-compose.yml
+########################################

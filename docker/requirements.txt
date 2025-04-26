@@ -1,19 +1,8 @@
 # Basic
-numpy
-pandas
-matplotlib
-scikit-learn
-
-# pre-processing
-pyspark
-findspark # Helpful utility for working with PySpark in notebooks
-jq # for processing json data
-
-#Visualization
-seaborn  # Highly recommended, but not strictly "essential"
-statsmodels
-
-#Interactive
 jupyterlab
-notebook
-ipywidgets
+ipykernel
+matplotlib
+pandas
+numpy
+scipy
+scikit-learn

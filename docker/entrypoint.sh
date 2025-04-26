@@ -1,46 +1,62 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Fetch AWS credentials from Secrets Manager if secret name is set
-if [ -n "$AWS_SECRET_NAME" ]; then
-  echo "Fetching AWS credentials..."
-  if ! command -v aws &>/dev/null; then
-    echo "AWS CLI not found. Exiting."
-    exit 1
-  fi
+#-------------------------------
+# Globals & Defaults (override via ENV)
+#-------------------------------
+JUPYTER_USER_DIR="${JUPYTER_WORKSPACE_DIR:-/home/jupyteruser/work}"
+LOG_DIR="${LOG_DIR:-${JUPYTER_USER_DIR}/logs}"
+JUPYTER_PORT="${JUPYTER_PORT:-8888}"
+JUPYTER_PASSWORD="${JUPYTER_PASSWORD:-}"
+JUPYTER_TOKEN="${JUPYTER_TOKEN:-}"
+OWNER_UID="${UID:-1000}"
+OWNER_GID="${GID:-1000}"
+JUPYTER_CONFIG_DIR="/home/jupyteruser/.jupyter"
 
-  if ! command -v jq &>/dev/null; then
-    echo "jq not found. Exiting."
-    exit 1
-  fi
+# Ensure log dir and config dir exist & owned correctly
+mkdir -p "${LOG_DIR}" "${JUPYTER_CONFIG_DIR}"
+chown -R "${OWNER_UID}:${OWNER_GID}" "${JUPYTER_USER_DIR}" "${LOG_DIR}" "${JUPYTER_CONFIG_DIR}"
 
-  CREDS=$(aws secretsmanager get-secret-value --secret-id "$AWS_SECRET_NAME" --query 'SecretString' --output text)
-  export AWS_ACCESS_KEY_ID=$(echo "$CREDS" | jq -r '.AWS_ACCESS_KEY_ID')
-  export AWS_SECRET_ACCESS_KEY=$(echo "$CREDS" | jq -r '.AWS_SECRET_ACCESS_KEY')
-fi
+# Redirect all stdout/stderr to a logfile (and console)
+LOGFILE="${LOG_DIR}/entrypoint.$(date +%Y%m%d_%H%M%S).log"
+exec > >(tee -a "${LOGFILE}") 2>&1
 
-# Change ownership of the mounted volume
-if [ -d "$JUPYTER_MOUNT_PATH" ]; then
-  echo "Changing ownership of $JUPYTER_MOUNT_PATH to UID:$UID GID:$GID"
-  chown -R "$UID":"$GID" "$JUPYTER_MOUNT_PATH"
-fi
+echo "[$(date +'%Y-%m-%dT%H:%M:%S%z')] Starting entrypoint"
+echo "  Workspace: ${JUPYTER_USER_DIR}"
+echo "  Log file:  ${LOGFILE}"
 
-# JupyterLab password setup
-if [ -z "$JUPYTER_PASSWORD" ]; then
-  echo "JUPYTER_PASSWORD environment variable not set. Using token-based authentication."
+#-------------------------------
+# Jupyter Auth Setup
+#-------------------------------
+if [[ -n "${JUPYTER_PASSWORD}" ]]; then
+  echo "[$(date)] Configuring password auth for JupyterLab"
+  HASH=$(python3 - <<PYCODE
+from jupyter_server.auth import passwd
+print(passwd("${JUPYTER_PASSWORD}"))
+PYCODE
+  )
+  cat > "${JUPYTER_CONFIG_DIR}/jupyter_server_config.py" <<EOF
+c.ServerApp.password = u'${HASH}'
+c.ServerApp.port = ${JUPYTER_PORT}
+c.ServerApp.open_browser = False
+c.ServerApp.notebook_dir = '${JUPYTER_USER_DIR}'
+EOF
+
+elif [[ -n "${JUPYTER_TOKEN}" ]]; then
+  echo "[$(date)] Configuring token auth for JupyterLab"
+  cat > "${JUPYTER_CONFIG_DIR}/jupyter_server_config.py" <<EOF
+c.ServerApp.token = '${JUPYTER_TOKEN}'
+c.ServerApp.port = ${JUPYTER_PORT}
+c.ServerApp.open_browser = False
+c.ServerApp.notebook_dir = '${JUPYTER_USER_DIR}'
+EOF
+
 else
-  echo "JUPYTER_PASSWORD is set. Enabling password authentication for JupyterLab."
-
-  # Check if jupyter_server.auth is available
-  if ! python3 -c "import jupyter_server.auth" &>/dev/null; then
-    echo "Error: jupyter_server.auth module not found. Please install jupyterlab properly."
-    exit 1
-  fi
-
-  HASH=$(python3 -c "from jupyter_server.auth import passwd; print(passwd('$JUPYTER_PASSWORD'))")
-  mkdir -p /home/jupyteruser/.jupyter
-  echo "c.ServerApp.password = u'$HASH'" > /home/jupyteruser/.jupyter/jupyter_server_config.py
+  echo "[$(date)] No JUPYTER_PASSWORD or JUPYTER_TOKEN provided; using default token-based auth"
 fi
 
-# Start JupyterLab as the jupyteruser
-exec su jupyteruser -c "$@"
+#-------------------------------
+# Final Exec
+#-------------------------------
+echo "[$(date)] Executing: $*"
+exec "$@"

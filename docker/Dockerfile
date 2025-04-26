@@ -1,51 +1,97 @@
-FROM python:3.9
+########################################
+# Stage 1: builder
+########################################
+ARG PYTHON_IMAGE=python:3.9-slim
+FROM ${PYTHON_IMAGE} AS builder
 
-# Install system dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    tini default-jre jq curl awscli && \
-    rm -rf /var/lib/apt/lists/*
+# Build-time arguments (can override from CLI or Compose)
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+ARG VENV_PATH=/opt/venv
+ARG REQUIREMENTS_FILE=requirements.txt
 
-# Install Python packages
-COPY requirements.txt /tmp/requirements.txt
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r /tmp/requirements.txt && \
-    rm /tmp/requirements.txt
+# Install system deps for building and tini/jq
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    curl \
+    tini \
+    jq \
+    sudo \
+    && rm -rf /var/lib/apt/lists/*
 
-# User configuration
-ARG UID=1000
-ARG GID=1000
-ENV UID=${UID}
-ENV GID=${GID}
+# Create the jupyter group & user
+RUN addgroup --gid ${GROUP_ID} jupytergroup \
+    && useradd -ms /bin/bash -u ${USER_ID} -g jupytergroup jupyteruser
 
-# Create a non-root user
-RUN addgroup --gid ${GID} jupytergroup && \
-    useradd -ms /bin/bash -u ${UID} -g jupytergroup jupyteruser
+# Create a virtualenv & install Python deps
+WORKDIR ${VENV_PATH}
+RUN python3 -m venv . \
+    && . bin/activate \
+    && pip install --upgrade pip
 
-# Set working directory
-RUN mkdir -p /home/jupyteruser/work && \
-    chown -R ${UID}:${GID} /home/jupyteruser/work
-WORKDIR /home/jupyteruser
+COPY ${REQUIREMENTS_FILE} /tmp/
+RUN . ${VENV_PATH}/bin/activate \
+    && pip install --no-cache-dir -r /tmp/${REQUIREMENTS_FILE}
 
-# Copy baseline project files
-COPY --chown=jupyteruser:jupytergroup ../baseline/ /home/jupyteruser/work/
 
-# Optional: Install Hadoop if arguments are passed
-ARG HADOOP_VERSION
-ARG HADOOP_URL
-RUN if [ -n "$HADOOP_VERSION" ] && [ -n "$HADOOP_URL" ]; then \
-    curl -L -q "$HADOOP_URL" -o hadoop.tar.gz && \
-    tar -xzf hadoop.tar.gz && \
-    mkdir -p /home/jupyteruser/hadoop && \
-    mv hadoop-${HADOOP_VERSION} /home/jupyteruser/hadoop && \
-    rm hadoop.tar.gz && \
-    echo "export PATH=\$PATH:/home/jupyteruser/hadoop/bin" >> /home/jupyteruser/.bashrc; \
-    fi
+########################################
+# Stage 2: runtime
+########################################
+ARG PYTHON_IMAGE=python:3.9-slim
+FROM ${PYTHON_IMAGE} AS runtime
 
-# Entrypoint setup
-COPY entrypoint.sh /entrypoint.sh
+# Re-declare args in this stage
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+ARG VENV_PATH=/opt/venv
+ARG JUPYTER_WORKSPACE_DIR=/home/jupyteruser/work
+ARG JUPYTER_PORT=8888
+
+# Install minimal runtime deps
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+    tini \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy over the venv from builder
+COPY --from=builder ${VENV_PATH} ${VENV_PATH}
+
+# Create jupyter user again
+RUN addgroup --gid ${GROUP_ID} jupytergroup \
+    && useradd -ms /bin/bash -u ${USER_ID} -g jupytergroup jupyteruser
+
+# Grant passwordless sudo for su only
+RUN mkdir -p /etc/sudoers.d \
+    && usermod -aG sudo jupyteruser \
+    && echo "jupyteruser ALL=(ALL) NOPASSWD: /usr/bin/su" > /etc/sudoers.d/jupyteruser-su \
+    && chmod 0440 /etc/sudoers.d/jupyteruser-su
+
+# Switch to non-root
+USER jupyteruser
+WORKDIR ${JUPYTER_WORKSPACE_DIR}
+
+# Ensure our venv is first on PATH
+ENV PATH="${VENV_PATH}/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    JUPYTER_PORT=${JUPYTER_PORT} \
+    JUPYTER_WORKSPACE_DIR=${JUPYTER_WORKSPACE_DIR}
+
+# Copy entrypoint and baseline code
+COPY --chown=jupyteruser:jupytergroup entrypoint.sh /entrypoint.sh
+COPY --chown=jupyteruser:jupytergroup ./baseline ${JUPYTER_WORKSPACE_DIR}
+
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 8888
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["/usr/local/bin/jupyter-lab", "--ip=0.0.0.0", "--port=8888", "--no-browser"]
+EXPOSE ${JUPYTER_PORT}
+
+ENTRYPOINT ["tini", "--", "/entrypoint.sh"]
+CMD jupyter-lab --ip=0.0.0.0 --port=${JUPYTER_PORT} --no-browser
+
+# --- Logging ---
+# All application logs (Jupyter, AWS fetch, etc.) go to stdout/stderr by default.
+# You can mount a host directory to capture logs if needed:
+#    docker run -v /host/logs:/home/jupyteruser/work/logs ...
