@@ -6,3 +6,7 @@ pandas
 numpy
 scipy
 scikit-learn
+findspark
+pyspark
+psycopg2-binary
+sockets
